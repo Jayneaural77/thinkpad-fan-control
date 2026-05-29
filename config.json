@@ -1,0 +1,9 @@
+{
+  "mode": "auto",
+  "manual_level": "auto",
+  "curve": [[0, 0], [50, 1], [57, 2], [63, 3], [69, 4], [75, 5], [80, 6], [84, 7]],
+  "hysteresis": 4,
+  "critical_temp": 87,
+  "poll_interval": 2,
+  "smoothing_seconds": 12
+}

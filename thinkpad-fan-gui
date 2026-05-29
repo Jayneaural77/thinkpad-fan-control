@@ -1,0 +1,570 @@
+#!/usr/bin/env python3
+"""
+thinkpad-fan-gui - desktop control panel for thinkpad-fand.
+
+Runs as the normal user (no root). It:
+  * shows live CPU temperature, fan RPM and the level the firmware reports,
+  * lets you pick a mode (Auto curve / Manual / BIOS) and a manual level,
+  * edits the auto temperature curve on an interactive graph (drag points;
+    X = fan speed %, Y = temperature) plus presets / numeric boxes,
+  * toggles "launch at login" (XDG autostart),
+  * writes the user-owned config that the root daemon watches.
+
+All writes go to a plain JSON file; the daemon does the privileged work.
+"""
+
+import json
+import os
+import sys
+import glob
+import tkinter as tk
+from tkinter import ttk, messagebox
+
+CONFIG_PATH = "/etc/thinkpad-fan/config.json"
+FAN_PROC = "/proc/acpi/ibm/fan"
+SERVICE = "thinkpad-fand"
+
+# Temperature range shown on the curve graph's Y axis.
+TEMP_MIN, TEMP_MAX = 20, 95
+
+# XDG autostart entry for the "Launch at login" setting.
+AUTOSTART_DIR = os.path.expanduser("~/.config/autostart")
+AUTOSTART_FILE = os.path.join(AUTOSTART_DIR, "thinkpad-fan-control.desktop")
+
+# Window icon: prefer the installed locations, fall back to the source dir.
+ICON_CANDIDATES = [
+    "/usr/share/icons/hicolor/256x256/apps/thinkpad-fan-control.png",
+    "/usr/share/pixmaps/thinkpad-fan-control.png",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png"),
+]
+
+DEFAULT_CONFIG = {
+    "mode": "auto",
+    "manual_level": "auto",
+    "curve": [[0, 0], [50, 1], [57, 2], [63, 3], [69, 4], [75, 5], [80, 6], [84, 7]],
+    "hysteresis": 4,
+    "critical_temp": 87,
+    "poll_interval": 2,
+    "smoothing_seconds": 12,
+}
+
+# Auto-curve presets: temperature at which each of levels 1..7 engages.
+PRESETS = {
+    "Quiet":    [56, 63, 69, 74, 79, 83, 86],
+    "Balanced": [50, 57, 63, 69, 75, 80, 84],
+    "Cool":     [42, 48, 54, 60, 66, 72, 78],
+}
+
+
+# --------------------------------------------------------------------------- #
+# Reading system state (no root needed)
+# --------------------------------------------------------------------------- #
+def read_cpu_temp():
+    candidates = []
+    for d in glob.glob("/sys/class/hwmon/hwmon*"):
+        try:
+            with open(os.path.join(d, "name")) as f:
+                if f.read().strip() == "coretemp":
+                    candidates.append(d)
+        except OSError:
+            pass
+    if not candidates:
+        candidates = glob.glob("/sys/class/hwmon/hwmon*")
+    temps = []
+    for d in candidates:
+        for inp in glob.glob(os.path.join(d, "temp*_input")):
+            try:
+                with open(inp) as f:
+                    c = int(f.read().strip()) / 1000.0
+                if 0 < c < 150:
+                    temps.append(c)
+            except (OSError, ValueError):
+                pass
+    return int(round(max(temps))) if temps else None
+
+
+def read_fan_proc():
+    """Return (speed_rpm, level_str) from /proc/acpi/ibm/fan."""
+    speed, level = None, None
+    try:
+        with open(FAN_PROC) as f:
+            for line in f:
+                if line.startswith("speed:"):
+                    speed = line.split(":", 1)[1].strip()
+                elif line.startswith("level:"):
+                    level = line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return speed, level
+
+
+def service_active():
+    return os.system(f"systemctl is-active --quiet {SERVICE}") == 0
+
+
+# --------------------------------------------------------------------------- #
+# Config load/save
+# --------------------------------------------------------------------------- #
+def load_config():
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+        merged = dict(DEFAULT_CONFIG)
+        merged.update(cfg)
+        return merged
+    except (OSError, ValueError):
+        return dict(DEFAULT_CONFIG)
+
+
+def save_config(cfg):
+    """Atomic write via temp file + os.replace (needs a writable directory)."""
+    d = os.path.dirname(CONFIG_PATH)
+    tmp = os.path.join(d, ".config.json.tmp")
+    with open(tmp, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, CONFIG_PATH)
+
+
+# --------------------------------------------------------------------------- #
+# Autostart ("Launch at login") + icon
+# --------------------------------------------------------------------------- #
+def autostart_enabled():
+    return os.path.isfile(AUTOSTART_FILE)
+
+
+def set_autostart(enabled):
+    if enabled:
+        # Prefer the canonical installed binary; fall back to however we were run.
+        exec_path = "/usr/local/bin/thinkpad-fan-gui"
+        if not os.path.isfile(exec_path):
+            exec_path = os.path.abspath(sys.argv[0])
+        os.makedirs(AUTOSTART_DIR, exist_ok=True)
+        with open(AUTOSTART_FILE, "w") as f:
+            f.write(
+                "[Desktop Entry]\n"
+                "Type=Application\n"
+                "Name=ThinkPad Fan Control\n"
+                f"Exec={exec_path}\n"
+                "Icon=thinkpad-fan-control\n"
+                "Terminal=false\n"
+                "X-GNOME-Autostart-enabled=true\n"
+            )
+    else:
+        try:
+            os.remove(AUTOSTART_FILE)
+        except FileNotFoundError:
+            pass
+
+
+def find_icon():
+    for p in ICON_CANDIDATES:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# Editable fan-curve graph
+# --------------------------------------------------------------------------- #
+class CurveCanvas(tk.Canvas):
+    """Drag points to shape the fan curve.
+
+    X axis = fan speed % (levels 1..7 -> ~14%..100%), Y axis = temperature.
+    Each point is the temperature at which that fan speed turns on. Points are
+    kept monotonic (a higher speed can't engage at a lower temperature) and are
+    bound to the same IntVars as the numeric spinboxes, so the two stay in sync.
+    """
+    W, H = 384, 226
+    ML, MR, MT, MB = 46, 14, 16, 34          # margins (axis labels live here)
+
+    def __init__(self, parent, level_temp_vars, on_change=None):
+        super().__init__(parent, width=self.W, height=self.H, bg="white",
+                         highlightthickness=1, highlightbackground="#bbb")
+        self.vars = level_temp_vars          # 7 IntVars: temps for levels 1..7
+        self.on_change = on_change
+        self.active = None
+        self.enabled = True
+        self.bind("<Button-1>", self._press)
+        self.bind("<B1-Motion>", self._drag)
+        self.bind("<ButtonRelease-1>", self._release)
+        self.redraw()
+
+    def _pw(self):
+        return self.W - self.ML - self.MR
+
+    def _ph(self):
+        return self.H - self.MT - self.MB
+
+    def _x_for_level(self, lv):
+        return self.ML + (lv / 7.0) * self._pw()
+
+    def _y_for_temp(self, t):
+        frac = max(0.0, min(1.0, (t - TEMP_MIN) / (TEMP_MAX - TEMP_MIN)))
+        return self.MT + (1 - frac) * self._ph()
+
+    def _temp_for_y(self, y):
+        frac = 1 - (y - self.MT) / self._ph()
+        t = TEMP_MIN + frac * (TEMP_MAX - TEMP_MIN)
+        return int(round(max(TEMP_MIN, min(TEMP_MAX, t))))
+
+    def set_enabled(self, enabled):
+        self.enabled = enabled
+        self.redraw()
+
+    def redraw(self):
+        self.delete("all")
+        x0, y0 = self.ML, self.MT
+        x1, y1 = self.W - self.MR, self.H - self.MB
+        accent = "#2563eb" if self.enabled else "#b9b9b9"
+        txt = "#333" if self.enabled else "#aaa"
+
+        # gridlines + Y (temperature) labels
+        for t in range(TEMP_MIN, TEMP_MAX + 1, 15):
+            yy = self._y_for_temp(t)
+            self.create_line(x0, yy, x1, yy, fill="#eee")
+            self.create_text(x0 - 6, yy, text=str(t), anchor="e", font=("", 7), fill="#777")
+        # axes
+        self.create_line(x0, y0, x0, y1, fill="#999")
+        self.create_line(x0, y1, x1, y1, fill="#999")
+        # X (fan %) labels
+        for lv in range(1, 8):
+            xx = self._x_for_level(lv)
+            self.create_text(xx, y1 + 9, text=str(int(round(lv / 7 * 100))),
+                             anchor="n", font=("", 7), fill="#777")
+        self.create_text((x0 + x1) // 2, self.H - 3, text="Fan speed %",
+                         anchor="s", font=("", 8), fill="#555")
+        self.create_text(11, (y0 + y1) // 2, text="°C",
+                         anchor="center", font=("", 8), fill="#555")
+
+        # curve line + points
+        pts = [(self._x_for_level(lv), self._y_for_temp(self.vars[lv - 1].get()))
+               for lv in range(1, 8)]
+        flat = [c for xy in pts for c in xy]
+        self.create_line(*flat, fill=accent, width=2)
+        for i, (x, y) in enumerate(pts):
+            self.create_oval(x - 6, y - 6, x + 6, y + 6, fill=accent,
+                             outline="white", width=2)
+            self.create_text(x, y - 13, text=str(self.vars[i].get()),
+                             font=("", 7, "bold"), fill=txt)
+
+    def _nearest(self, x):
+        best, best_d = None, 1e9
+        for lv in range(1, 8):
+            d = abs(self._x_for_level(lv) - x)
+            if d < best_d:
+                best_d, best = d, lv - 1
+        return best if best_d < 28 else None
+
+    def _press(self, e):
+        if self.enabled:
+            self.active = self._nearest(e.x)
+
+    def _drag(self, e):
+        if not self.enabled or self.active is None:
+            return
+        i = self.active
+        t = self._temp_for_y(e.y)
+        # Keep the curve monotonic: clamp between the neighbouring points.
+        lo = self.vars[i - 1].get() + 1 if i > 0 else TEMP_MIN
+        hi = self.vars[i + 1].get() - 1 if i < 6 else TEMP_MAX
+        t = max(lo, min(max(lo, hi), t))
+        self.vars[i].set(t)
+        self.redraw()
+        if self.on_change:
+            self.on_change()
+
+    def _release(self, _e):
+        self.active = None
+
+
+# --------------------------------------------------------------------------- #
+# GUI
+# --------------------------------------------------------------------------- #
+class FanGUI:
+    def __init__(self, root):
+        self.root = root
+        self.cfg = load_config()
+        root.title("ThinkPad Fan Control")
+        root.resizable(False, False)
+
+        pad = {"padx": 10, "pady": 6}
+        main = ttk.Frame(root, padding=12)
+        main.grid(sticky="nsew")
+        # Two side-by-side columns keep the window short enough for a laptop screen.
+        leftcol = ttk.Frame(main)
+        leftcol.grid(row=0, column=0, sticky="n")
+        rightcol = ttk.Frame(main)
+        rightcol.grid(row=0, column=1, sticky="n")
+
+        # --- live status -----------------------------------------------------
+        status = ttk.LabelFrame(leftcol, text="Status", padding=10)
+        status.grid(row=0, column=0, sticky="ew", **pad)
+
+        self.temp_var = tk.StringVar(value="--")
+        self.rpm_var = tk.StringVar(value="--")
+        self.level_var = tk.StringVar(value="--")
+        self.daemon_var = tk.StringVar(value="checking…")
+
+        ttk.Label(status, text="CPU temperature:").grid(row=0, column=0, sticky="w")
+        ttk.Label(status, textvariable=self.temp_var, font=("", 14, "bold")).grid(row=0, column=1, sticky="w", padx=8)
+        ttk.Label(status, text="Fan speed:").grid(row=1, column=0, sticky="w")
+        ttk.Label(status, textvariable=self.rpm_var).grid(row=1, column=1, sticky="w", padx=8)
+        ttk.Label(status, text="Firmware level:").grid(row=2, column=0, sticky="w")
+        ttk.Label(status, textvariable=self.level_var).grid(row=2, column=1, sticky="w", padx=8)
+        ttk.Label(status, text="Daemon:").grid(row=3, column=0, sticky="w")
+        ttk.Label(status, textvariable=self.daemon_var).grid(row=3, column=1, sticky="w", padx=8)
+
+        # --- mode ------------------------------------------------------------
+        modef = ttk.LabelFrame(leftcol, text="Mode", padding=10)
+        modef.grid(row=1, column=0, sticky="ew", **pad)
+        self.mode_var = tk.StringVar(value=self.cfg.get("mode", "auto"))
+        for i, (val, label) in enumerate([
+            ("auto", "Automatic (temperature curve)"),
+            ("manual", "Manual (fixed level)"),
+            ("bios", "BIOS / firmware default"),
+        ]):
+            ttk.Radiobutton(modef, text=label, value=val, variable=self.mode_var,
+                            command=self._on_mode_change).grid(row=i, column=0, sticky="w")
+
+        # --- manual ----------------------------------------------------------
+        self.manualf = ttk.LabelFrame(leftcol, text="Manual level", padding=10)
+        self.manualf.grid(row=2, column=0, sticky="ew", **pad)
+        ml = self.cfg.get("manual_level", "auto")
+        init = int(ml) if ml.isdigit() else 0
+        # Single source of truth for the chosen manual level ("0".."7" / special).
+        self.manual_choice = ml if ml in (
+            "0", "1", "2", "3", "4", "5", "6", "7", "full-speed", "disengaged") else str(init)
+        self.scale_label = ttk.Label(self.manualf, text="")
+        self.scale_label.grid(row=0, column=0, columnspan=3, sticky="w")
+        self.scale = ttk.Scale(self.manualf, from_=0, to=7, orient="horizontal", length=240,
+                               command=self._on_scale)
+        self.scale.set(init)
+        self.scale.grid(row=1, column=0, columnspan=3, sticky="ew", pady=4)
+        ttk.Label(self.manualf, text="0 = off / silent   ·   7 = maximum").grid(
+            row=2, column=0, columnspan=3, sticky="w")
+        ttk.Button(self.manualf, text="Full speed", command=lambda: self._set_special("full-speed")
+                   ).grid(row=3, column=0, sticky="w", pady=(6, 0))
+        ttk.Button(self.manualf, text="Disengaged (burst)", command=self._disengaged_warn
+                   ).grid(row=3, column=1, sticky="w", pady=(6, 0), padx=6)
+        self._update_manual_label()
+
+        # --- auto curve ------------------------------------------------------
+        self.autof = ttk.LabelFrame(rightcol, text="Automatic curve", padding=10)
+        self.autof.grid(row=0, column=0, sticky="ew", **pad)
+        presetf = ttk.Frame(self.autof)
+        presetf.grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(presetf, text="Preset:").grid(row=0, column=0, sticky="w")
+        for i, name in enumerate(PRESETS):
+            ttk.Button(presetf, text=name, width=9,
+                       command=lambda n=name: self._apply_preset(n)).grid(row=0, column=i + 1, padx=3)
+
+        # Build the per-level temperature variables first (the graph needs them).
+        self.level_temp_vars = []
+        curve_temps = self._curve_to_temps(self.cfg.get("curve"))
+        for lv in range(1, 8):
+            self.level_temp_vars.append(tk.IntVar(value=curve_temps[lv - 1]))
+
+        ttk.Label(self.autof, text="Drag a point to set the temperature at which "
+                                   "each fan speed turns on:").grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(8, 4))
+
+        # The draggable graph (X = fan %, Y = temperature).
+        self.curve_canvas = CurveCanvas(self.autof, self.level_temp_vars,
+                                        on_change=lambda: self.msg_var.set(
+                                            "Curve edited — press Apply."))
+        self.curve_canvas.grid(row=2, column=0, columnspan=2, pady=(0, 6))
+
+        # Numeric fine-tuning, kept in sync with the graph via variable traces.
+        grid = ttk.Frame(self.autof)
+        grid.grid(row=3, column=0, columnspan=2, sticky="w")
+        for lv in range(1, 8):
+            col = (lv - 1) % 4
+            r = 2 * ((lv - 1) // 4)
+            ttk.Label(grid, text=f"{int(round(lv / 7 * 100))}%").grid(row=r, column=col, padx=4)
+            sb = ttk.Spinbox(grid, from_=TEMP_MIN, to=TEMP_MAX, width=4,
+                             textvariable=self.level_temp_vars[lv - 1])
+            sb.grid(row=r + 1, column=col, padx=4, pady=(0, 6))
+        for var in self.level_temp_vars:
+            var.trace_add("write", lambda *_a: self.curve_canvas.redraw())
+
+        critf = ttk.Frame(self.autof)
+        critf.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Label(critf, text="Force full-speed at (°C):").grid(row=0, column=0, sticky="w")
+        self.crit_var = tk.IntVar(value=self.cfg.get("critical_temp", 87))
+        ttk.Spinbox(critf, from_=60, to=90, width=4, textvariable=self.crit_var).grid(
+            row=0, column=1, padx=6)
+        ttk.Label(critf, text="Smooth temperature over (s):").grid(
+            row=1, column=0, sticky="w", pady=(4, 0))
+        self.smooth_var = tk.IntVar(value=self.cfg.get("smoothing_seconds", 12))
+        ttk.Spinbox(critf, from_=0, to=60, width=4, textvariable=self.smooth_var).grid(
+            row=1, column=1, padx=6, pady=(4, 0))
+        ttk.Label(critf, text="(higher = steadier fan, ignores brief CPU spikes)",
+                  foreground="#666").grid(row=2, column=0, columnspan=2, sticky="w")
+
+        # --- settings --------------------------------------------------------
+        setf = ttk.LabelFrame(rightcol, text="Settings", padding=10)
+        setf.grid(row=1, column=0, sticky="ew", **pad)
+        self.autostart_var = tk.BooleanVar(value=autostart_enabled())
+        ttk.Checkbutton(setf, text="Launch this control panel at login",
+                        variable=self.autostart_var,
+                        command=self._toggle_autostart).grid(row=0, column=0, sticky="w")
+        ttk.Label(setf, text="(the background fan service already starts on boot)",
+                  foreground="#666").grid(row=1, column=0, sticky="w")
+
+        # --- actions (span both columns at the bottom) -----------------------
+        actf = ttk.Frame(main)
+        actf.grid(row=1, column=0, columnspan=2, sticky="ew", **pad)
+        ttk.Button(actf, text="Apply", command=self.apply).grid(row=0, column=0, padx=4)
+        ttk.Button(actf, text="Reload", command=self.reload).grid(row=0, column=1, padx=4)
+        ttk.Button(actf, text="Quit", command=root.destroy).grid(row=0, column=2, padx=4)
+        self.msg_var = tk.StringVar(value="")
+        ttk.Label(main, textvariable=self.msg_var, foreground="#070").grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=10)
+
+        self._on_mode_change()
+        self._refresh()
+
+    def _toggle_autostart(self):
+        try:
+            set_autostart(self.autostart_var.get())
+            self.msg_var.set("Launch-at-login %s."
+                             % ("enabled" if self.autostart_var.get() else "disabled"))
+        except OSError as e:
+            messagebox.showerror("Startup", f"Could not update autostart:\n{e}")
+            self.autostart_var.set(autostart_enabled())
+
+    # ----- helpers -------------------------------------------------------- #
+    def _curve_to_temps(self, curve):
+        """Convert stored curve [[t,lv]...] to per-level temps for levels 1..7."""
+        defaults = PRESETS["Balanced"]
+        temps = dict()
+        if isinstance(curve, list):
+            for item in curve:
+                try:
+                    t, lv = int(item[0]), int(item[1])
+                    if 1 <= lv <= 7:
+                        temps[lv] = t
+                except (TypeError, ValueError, IndexError):
+                    pass
+        return [temps.get(lv, defaults[lv - 1]) for lv in range(1, 8)]
+
+    def _on_mode_change(self):
+        mode = self.mode_var.get()
+        manual_state = "normal" if mode == "manual" else "disabled"
+        auto_state = "normal" if mode == "auto" else "disabled"
+        self._set_children_state(self.manualf, manual_state)
+        self._set_children_state(self.autof, auto_state)
+        self.curve_canvas.set_enabled(mode == "auto")
+
+    def _set_children_state(self, frame, state):
+        for child in frame.winfo_children():
+            self._set_state_recursive(child, state)
+
+    def _set_state_recursive(self, widget, state):
+        try:
+            widget.configure(state=state)
+        except tk.TclError:
+            pass
+        for c in widget.winfo_children():
+            self._set_state_recursive(c, state)
+
+    def _update_manual_label(self):
+        self.scale_label.config(text=f"Selected: level {self.manual_choice}")
+
+    def _on_scale(self, _val):
+        lv = int(round(float(self.scale.get())))
+        self.manual_choice = str(lv)        # dragging the slider overrides any special level
+        self._update_manual_label()
+
+    def _set_special(self, value):
+        self.manual_choice = value
+        self._update_manual_label()
+
+    def _disengaged_warn(self):
+        if messagebox.askyesno(
+                "Disengaged mode",
+                "'Disengaged' removes the fan's speed limit for maximum airflow.\n\n"
+                "It is meant for short bursts, not sustained use. Continue?"):
+            self._set_special("disengaged")
+
+    def _apply_preset(self, name):
+        for var, t in zip(self.level_temp_vars, PRESETS[name]):
+            var.set(t)
+        self.msg_var.set(f"Loaded '{name}' preset — press Apply.")
+
+    # ----- actions -------------------------------------------------------- #
+    def _build_config(self):
+        cfg = dict(self.cfg)
+        cfg["mode"] = self.mode_var.get()
+        if cfg["mode"] == "manual":
+            cfg["manual_level"] = self.manual_choice
+
+        temps = [max(1, v.get()) for v in self.level_temp_vars]
+        temps = sorted(temps)  # keep thresholds monotonic
+        curve = [[0, 0]] + [[temps[lv - 1], lv] for lv in range(1, 8)]
+        cfg["curve"] = curve
+        cfg["critical_temp"] = int(self.crit_var.get())
+        cfg["smoothing_seconds"] = int(self.smooth_var.get())
+        return cfg
+
+    def apply(self):
+        cfg = self._build_config()
+        try:
+            save_config(cfg)
+        except OSError as e:
+            messagebox.showerror(
+                "Cannot save",
+                f"Could not write {CONFIG_PATH}:\n{e}\n\n"
+                "Re-run the installer so the config is owned by your user.")
+            return
+        self.cfg = cfg
+        self.msg_var.set("Applied. The daemon will pick it up within a couple of seconds.")
+
+    def reload(self):
+        self.cfg = load_config()
+        self.mode_var.set(self.cfg.get("mode", "auto"))
+        ml = self.cfg.get("manual_level", "0")
+        self.manual_choice = ml
+        if ml.isdigit():
+            self.scale.set(int(ml))
+        self._update_manual_label()
+        for var, t in zip(self.level_temp_vars, self._curve_to_temps(self.cfg.get("curve"))):
+            var.set(t)
+        self.crit_var.set(self.cfg.get("critical_temp", 87))
+        self.smooth_var.set(self.cfg.get("smoothing_seconds", 12))
+        self._on_mode_change()
+        self.msg_var.set("Reloaded from disk.")
+
+    # ----- live refresh --------------------------------------------------- #
+    def _refresh(self):
+        t = read_cpu_temp()
+        self.temp_var.set(f"{t} °C" if t is not None else "n/a")
+        speed, level = read_fan_proc()
+        self.rpm_var.set(f"{speed} RPM" if speed is not None else "n/a")
+        self.level_var.set(level if level is not None else "n/a")
+        if service_active():
+            self.daemon_var.set("● running")
+        else:
+            self.daemon_var.set("● not running (run the installer)")
+        self.root.after(1500, self._refresh)
+
+
+def main():
+    # className sets the WM_CLASS so the desktop/dock matches our launcher icon.
+    root = tk.Tk(className="thinkpad-fan-control")
+    icon_path = find_icon()
+    if icon_path:
+        try:
+            img = tk.PhotoImage(file=icon_path)
+            root.iconphoto(True, img)
+            root._icon_ref = img        # keep a reference so it isn't garbage-collected
+        except tk.TclError:
+            pass
+    FanGUI(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

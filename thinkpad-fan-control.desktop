@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ThinkPad Fan Control
+Comment=Monitor and control your ThinkPad fan speed
+Exec=/usr/local/bin/thinkpad-fan-gui
+Icon=thinkpad-fan-control
+Terminal=false
+Categories=System;Settings;HardwareSettings;
+Keywords=fan;cooling;temperature;thinkpad;
+StartupWMClass=thinkpad-fan-control

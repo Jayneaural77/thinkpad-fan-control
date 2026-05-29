@@ -1,0 +1,15 @@
+[Unit]
+Description=ThinkPad fan control daemon
+Documentation=file:///etc/thinkpad-fan/config.json
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/thinkpad-fand
+# Belt-and-suspenders: hand the fan back to firmware when the service stops.
+ExecStop=/bin/sh -c 'echo "level auto" > /proc/acpi/ibm/fan'
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

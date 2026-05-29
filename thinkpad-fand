@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""
+thinkpad-fand - ThinkPad fan control daemon.
+
+Runs as root (systemd service). It is the SOLE writer to /proc/acpi/ibm/fan.
+It reads a user-editable config file and applies one of three modes:
+
+    bios    - hand control back to the firmware ("level auto")
+    manual  - hold a fixed level (0-7, full-speed, disengaged)
+    auto    - temperature-based curve with hysteresis
+
+Safety design (see also the GUI):
+  * A hardware watchdog is armed every loop. If this daemon dies, the firmware
+    resumes automatic control within `watchdog` seconds - the fan can never get
+    stuck off.
+  * A critical-temperature override supersedes BOTH manual and auto modes: above
+    `critical_temp` the fan is forced to full-speed no matter what the config says.
+    This is what makes a user-writable config safe.
+  * On SIGTERM/SIGINT (and via systemd ExecStop) the fan is restored to firmware
+    "auto" before exit.
+
+Config is distrusted on every read: values are clamped/validated, and a bad file
+falls back to the last known-good config.
+"""
+
+import json
+import os
+import signal
+import sys
+import time
+import glob
+from collections import deque
+
+FAN_PROC = "/proc/acpi/ibm/fan"
+CONFIG_PATH = "/etc/thinkpad-fan/config.json"
+
+VALID_MANUAL = {"0", "1", "2", "3", "4", "5", "6", "7", "full-speed", "disengaged"}
+
+# Hard safety limits the config can never override.
+WATCHDOG_SECONDS = 15        # firmware reclaims the fan this long after we stop talking
+                             # (must stay > max poll_interval so it never expires while running)
+ABSOLUTE_CRITICAL = 90       # no matter the config, force full-speed at/above this
+
+DEFAULT_CONFIG = {
+    "mode": "auto",
+    "manual_level": "auto",
+    # [temp_celsius, level]; level engages at temp and above. Must start at 0.
+    "curve": [[0, 0], [50, 1], [57, 2], [63, 3], [69, 4], [75, 5], [80, 6], [84, 7]],
+    "hysteresis": 4,         # degrees C the temp must drop below a threshold to step down
+    "critical_temp": 87,     # force full-speed at/above this (clamped <= ABSOLUTE_CRITICAL)
+    "poll_interval": 2,      # seconds between checks
+    "smoothing_seconds": 12, # average temperature over this window so brief CPU spikes
+                             # don't surge the fan on/off (0 = react instantly)
+}
+
+
+def log(msg):
+    print(f"[thinkpad-fand] {msg}", flush=True)
+
+
+# --------------------------------------------------------------------------- #
+# Temperature reading
+# --------------------------------------------------------------------------- #
+def _hwmon_dirs_named(target):
+    """Return hwmon dirs whose `name` matches target (e.g. 'coretemp')."""
+    out = []
+    for d in glob.glob("/sys/class/hwmon/hwmon*"):
+        try:
+            with open(os.path.join(d, "name")) as f:
+                if f.read().strip() == target:
+                    out.append(d)
+        except OSError:
+            pass
+    return out
+
+
+def read_cpu_temp():
+    """Highest plausible CPU temperature in whole degrees C, or None."""
+    candidates = _hwmon_dirs_named("coretemp")
+    if not candidates:
+        # Fall back to every hwmon device if coretemp isn't present.
+        candidates = glob.glob("/sys/class/hwmon/hwmon*")
+    temps = []
+    for d in candidates:
+        for inp in glob.glob(os.path.join(d, "temp*_input")):
+            try:
+                with open(inp) as f:
+                    milli = int(f.read().strip())
+            except (OSError, ValueError):
+                continue
+            celsius = milli / 1000.0
+            if 0 < celsius < 150:          # ignore obviously bogus readings
+                temps.append(celsius)
+    if not temps:
+        return None
+    return int(round(max(temps)))
+
+
+# --------------------------------------------------------------------------- #
+# Fan writing
+# --------------------------------------------------------------------------- #
+def fan_write(command, dry_run=False):
+    if dry_run:
+        log(f"DRY-RUN would write: {command!r}")
+        return
+    try:
+        with open(FAN_PROC, "w") as f:
+            f.write(command + "\n")
+    except OSError as e:
+        log(f"ERROR writing {command!r} to {FAN_PROC}: {e}")
+
+
+def arm_watchdog(dry_run=False):
+    fan_write(f"watchdog {WATCHDOG_SECONDS}", dry_run)
+
+
+def set_level(level, dry_run=False):
+    """level is one of '0'..'7', 'full-speed', 'disengaged', 'auto'."""
+    fan_write(f"level {level}", dry_run)
+
+
+def should_write(intent_changed, current, expected_readback):
+    """Decide whether to (re)write the fan level this loop.
+
+    Write if our intended command changed, or if the firmware's reported level
+    has drifted away from what it read back after our last write (e.g. the EC
+    watchdog reverted to 'auto'). Otherwise leave the fan alone so it stays calm.
+    """
+    if intent_changed:
+        return True
+    return (expected_readback is not None and current is not None
+            and current != expected_readback)
+
+
+def read_current_level():
+    """The 'level:' the firmware currently reports, or None if unreadable."""
+    try:
+        with open(FAN_PROC) as f:
+            for line in f:
+                if line.startswith("level:"):
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# Config loading / validation
+# --------------------------------------------------------------------------- #
+def _clamp(v, lo, hi, default):
+    try:
+        v = type(default)(v)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, v))
+
+
+def validate_config(raw):
+    """Return a sane config dict, clamping/repairing anything dubious."""
+    cfg = dict(DEFAULT_CONFIG)
+    if not isinstance(raw, dict):
+        return cfg
+
+    mode = raw.get("mode", cfg["mode"])
+    cfg["mode"] = mode if mode in ("auto", "manual", "bios") else "auto"
+
+    ml = str(raw.get("manual_level", cfg["manual_level"]))
+    cfg["manual_level"] = ml if ml in VALID_MANUAL else "auto"
+
+    cfg["hysteresis"] = _clamp(raw.get("hysteresis", 4), 0, 15, 4)
+    # Capped well below WATCHDOG_SECONDS so the watchdog never expires mid-run.
+    cfg["poll_interval"] = _clamp(raw.get("poll_interval", 2), 1, 5, 2)
+    cfg["smoothing_seconds"] = _clamp(raw.get("smoothing_seconds", 12), 0, 60, 12)
+    cfg["critical_temp"] = _clamp(raw.get("critical_temp", 87), 60, ABSOLUTE_CRITICAL, 87)
+
+    # Curve: list of [temp, level]. Clamp levels 0-7, temps 0-100, sort by temp,
+    # drop duplicates, ensure a level-0 baseline.
+    curve = []
+    raw_curve = raw.get("curve", cfg["curve"])
+    if isinstance(raw_curve, list):
+        seen_temps = set()
+        for item in raw_curve:
+            try:
+                t = _clamp(item[0], 0, 100, 0)
+                lv = _clamp(item[1], 0, 7, 0)
+            except (TypeError, IndexError):
+                continue
+            if t in seen_temps:
+                continue
+            seen_temps.add(t)
+            curve.append([int(t), int(lv)])
+    curve.sort(key=lambda x: x[0])
+    if not curve or curve[0][0] != 0:
+        curve.insert(0, [0, 0])
+    cfg["curve"] = curve
+    return cfg
+
+
+class ConfigStore:
+    def __init__(self, path):
+        self.path = path
+        self.mtime = 0
+        self.cfg = dict(DEFAULT_CONFIG)
+
+    def maybe_reload(self):
+        """Reload if the file changed; keep last-good on any error."""
+        try:
+            mtime = os.path.getmtime(self.path)
+        except OSError:
+            return  # file gone -> keep last-good
+        if mtime == self.mtime:
+            return
+        try:
+            with open(self.path) as f:
+                raw = json.load(f)
+        except (OSError, ValueError) as e:
+            log(f"WARNING bad config ({e}); keeping last-good")
+            self.mtime = mtime
+            return
+        self.cfg = validate_config(raw)
+        self.mtime = mtime
+        log(f"config loaded: mode={self.cfg['mode']} "
+            f"manual={self.cfg['manual_level']} crit={self.cfg['critical_temp']}")
+
+
+# --------------------------------------------------------------------------- #
+# Auto-curve logic
+# --------------------------------------------------------------------------- #
+def curve_target_level(temp, prev_level, curve, hysteresis):
+    """Desired level for `temp` given the previous level, applying hysteresis
+    so the fan only steps DOWN once the temp has dropped well below a threshold."""
+    # Level if we only ever go up: highest threshold <= temp.
+    up = curve[0][1]
+    for t, lv in curve:
+        if temp >= t:
+            up = lv
+    if up >= prev_level:
+        return up
+    # Cooling: find the temp at which prev_level engaged; stay until temp drops
+    # `hysteresis` below it.
+    engage_temp = None
+    for t, lv in curve:
+        if lv == prev_level:
+            engage_temp = t
+            break
+    if engage_temp is None:
+        return up
+    if temp <= engage_temp - hysteresis:
+        return up
+    return prev_level
+
+
+# --------------------------------------------------------------------------- #
+# Main loop
+# --------------------------------------------------------------------------- #
+_running = True
+
+
+def _handle_term(signum, frame):
+    global _running
+    _running = False
+
+
+def restore_firmware(dry_run=False):
+    log("restoring firmware fan control (level auto)")
+    set_level("auto", dry_run)
+
+
+def main():
+    dry_run = "--dry-run" in sys.argv
+
+    if not dry_run and not os.access(FAN_PROC, os.W_OK):
+        log(f"ERROR: {FAN_PROC} is not writable. Run as root and ensure "
+            f"thinkpad_acpi was loaded with fan_control=1.")
+        sys.exit(1)
+
+    signal.signal(signal.SIGTERM, _handle_term)
+    signal.signal(signal.SIGINT, _handle_term)
+
+    store = ConfigStore(CONFIG_PATH)
+    store.maybe_reload()
+
+    log(f"started (dry_run={dry_run}); watchdog={WATCHDOG_SECONDS}s")
+    prev_applied = None       # last command we intended / wrote
+    prev_level = 0            # last numeric level (for hysteresis), 0..7
+    force_active = False      # critical-temp override currently engaged?
+    expected_readback = None  # what the firmware reports once our command settles
+    history = deque()         # recent raw temps, for smoothing the curve input
+
+    while _running:
+        store.maybe_reload()
+        cfg = store.cfg
+        temp = read_cpu_temp()
+
+        # Smooth the temperature the CURVE sees so brief CPU spikes don't surge
+        # the fan on/off. The safety override below still uses the RAW temp so it
+        # reacts instantly to genuinely dangerous spikes.
+        window = max(1, round(cfg["smoothing_seconds"] / cfg["poll_interval"]))
+        if history.maxlen != window:
+            history = deque(history, maxlen=window)
+        if temp is not None:
+            history.append(temp)
+        avg_temp = int(round(sum(history) / len(history))) if history else None
+
+        # --- decide the command ---------------------------------------------
+        # Critical-temp override with hysteresis so it can't flap at the edge:
+        # engages at critical_temp, releases only once 5 C below it. Uses RAW temp.
+        if temp is not None:
+            if temp >= cfg["critical_temp"]:
+                force_active = True
+            elif temp <= cfg["critical_temp"] - 5:
+                force_active = False
+
+        forced = False
+        if force_active:
+            command = "full-speed"
+            forced = True
+        elif cfg["mode"] == "bios":
+            command = "auto"
+        elif cfg["mode"] == "manual":
+            command = cfg["manual_level"]
+            if command == "auto":      # 'auto' as a manual level == firmware auto
+                command = "auto"
+        else:  # auto curve
+            if avg_temp is None:
+                command = "auto"       # no reading -> safest is firmware auto
+            else:
+                lv = curve_target_level(avg_temp, prev_level, cfg["curve"], cfg["hysteresis"])
+                prev_level = lv
+                command = str(lv)
+
+        # Track numeric level for hysteresis continuity across mode switches.
+        if command.isdigit():
+            prev_level = int(command)
+        elif command in ("full-speed", "disengaged"):
+            prev_level = 7
+
+        # --- apply -----------------------------------------------------------
+        # Always re-arm the watchdog: it's a timer-only command that doesn't
+        # touch the fan, so a crash still hands control back to firmware fast.
+        arm_watchdog(dry_run)
+
+        # Write the 'level' only when needed, decided by reading the firmware's
+        # actual level back:
+        #   * intent changed                          -> write
+        #   * firmware drifted from our last result   -> re-assert (self-healing;
+        #     covers the watchdog/EC reverting to auto without us re-writing every
+        #     loop, which is what caused the spin-up/down wobble)
+        # In steady state nothing drifts, so we don't re-write -> the fan is calm.
+        # Capturing the post-write readback also handles 'full-speed'/'disengaged'
+        # reporting back as a different string than we wrote.
+        intent_changed = command != prev_applied
+        if dry_run:
+            do_write = intent_changed
+        else:
+            current = read_current_level()
+            do_write = should_write(intent_changed, current, expected_readback)
+
+        if do_write:
+            set_level(command, dry_run)
+            prev_applied = command
+            if not dry_run:
+                expected_readback = read_current_level()
+            tstr = f"{temp}C" if temp is not None else "n/a"
+            astr = f" avg={avg_temp}C" if avg_temp is not None else ""
+            extra = " [CRITICAL OVERRIDE]" if forced else ""
+            reason = "" if intent_changed else " (re-asserting; firmware drifted)"
+            log(f"temp={tstr}{astr} mode={cfg['mode']} -> level {command}{extra}{reason}")
+
+        # Sleep in small steps so we react to SIGTERM promptly.
+        slept = 0.0
+        interval = cfg["poll_interval"]
+        while _running and slept < interval:
+            time.sleep(0.25)
+            slept += 0.25
+
+    restore_firmware(dry_run)
+    log("stopped")
+
+
+if __name__ == "__main__":
+    main()

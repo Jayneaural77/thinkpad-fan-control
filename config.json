@@ -5,5 +5,6 @@
   "hysteresis": 4,
   "critical_temp": 87,
   "poll_interval": 2,
-  "smoothing_seconds": 12
+  "smoothing_seconds": 12,
+  "rekick_seconds": 5
 }

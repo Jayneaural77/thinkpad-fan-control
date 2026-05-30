@@ -51,6 +51,8 @@ DEFAULT_CONFIG = {
     "poll_interval": 2,      # seconds between checks
     "smoothing_seconds": 12, # average temperature over this window so brief CPU spikes
                              # don't surge the fan on/off (0 = react instantly)
+    "rekick_seconds": 5,     # if a commanded level stalls (>=1 but 0 RPM), re-kick it
+                             # this often to keep airflow at low levels (0 = disabled)
 }
 
 
@@ -144,6 +146,32 @@ def read_current_level():
     return None
 
 
+def read_fan_speed():
+    """Current fan RPM from the 'speed:' line, or None if unreadable."""
+    try:
+        with open(FAN_PROC) as f:
+            for line in f:
+                if line.startswith("speed:"):
+                    return int(line.split(":", 1)[1].strip())
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def wants_spin(command):
+    """True if `command` asks for a spinning level (so a 0-RPM reading = stall)."""
+    return (command.isdigit() and int(command) >= 1) or command in ("full-speed", "disengaged")
+
+
+def should_rekick(do_write, rekick_seconds, command, rpm, elapsed):
+    """Re-kick a stalled fan: we asked for a spinning level but RPM is 0, and it's
+    been at least rekick_seconds since the last write. Levels that spin (rpm > 0)
+    never qualify, so sustainable speeds are never re-kicked (no wobble)."""
+    if do_write or rekick_seconds <= 0:
+        return False
+    return wants_spin(command) and (rpm or 0) == 0 and elapsed >= rekick_seconds
+
+
 # --------------------------------------------------------------------------- #
 # Config loading / validation
 # --------------------------------------------------------------------------- #
@@ -171,6 +199,7 @@ def validate_config(raw):
     # Capped well below WATCHDOG_SECONDS so the watchdog never expires mid-run.
     cfg["poll_interval"] = _clamp(raw.get("poll_interval", 2), 1, 5, 2)
     cfg["smoothing_seconds"] = _clamp(raw.get("smoothing_seconds", 12), 0, 60, 12)
+    cfg["rekick_seconds"] = _clamp(raw.get("rekick_seconds", 5), 0, 60, 5)
     cfg["critical_temp"] = _clamp(raw.get("critical_temp", 87), 60, ABSOLUTE_CRITICAL, 87)
 
     # Curve: list of [temp, level]. Clamp levels 0-7, temps 0-100, sort by temp,
@@ -286,6 +315,8 @@ def main():
     force_active = False      # critical-temp override currently engaged?
     expected_readback = None  # what the firmware reports once our command settles
     history = deque()         # recent raw temps, for smoothing the curve input
+    last_write = 0.0          # monotonic time of the last level write (for re-kick pacing)
+    was_stalled = False       # currently in a stall-and-re-kick episode? (for tidy logging)
 
     while _running:
         store.maybe_reload()
@@ -349,23 +380,41 @@ def main():
         # In steady state nothing drifts, so we don't re-write -> the fan is calm.
         # Capturing the post-write readback also handles 'full-speed'/'disengaged'
         # reporting back as a different string than we wrote.
+        now = time.monotonic()
         intent_changed = command != prev_applied
+        stall_kick = False
         if dry_run:
             do_write = intent_changed
         else:
             current = read_current_level()
             do_write = should_write(intent_changed, current, expected_readback)
+            # Stall re-kick: we commanded a spinning level but the fan reads 0 RPM
+            # (a low level the fan can't self-sustain). Re-issue it every
+            # rekick_seconds to pulse some airflow. Levels that DO spin (RPM > 0)
+            # never trigger this, so high speeds stay smooth - no wobble.
+            stall_kick = should_rekick(do_write, cfg["rekick_seconds"], command,
+                                       read_fan_speed(), now - last_write)
 
-        if do_write:
+        if do_write or stall_kick:
             set_level(command, dry_run)
             prev_applied = command
+            last_write = now
             if not dry_run:
                 expected_readback = read_current_level()
             tstr = f"{temp}C" if temp is not None else "n/a"
             astr = f" avg={avg_temp}C" if avg_temp is not None else ""
             extra = " [CRITICAL OVERRIDE]" if forced else ""
-            reason = "" if intent_changed else " (re-asserting; firmware drifted)"
-            log(f"temp={tstr}{astr} mode={cfg['mode']} -> level {command}{extra}{reason}")
+            if stall_kick:
+                if not was_stalled:      # log once per stall episode, not every pulse
+                    log(f"level {command} stalled (0 RPM); re-kicking every "
+                        f"{cfg['rekick_seconds']}s for airflow")
+                was_stalled = True
+            else:
+                was_stalled = False
+                reason = "" if intent_changed else " (re-asserting; firmware drifted)"
+                log(f"temp={tstr}{astr} mode={cfg['mode']} -> level {command}{extra}{reason}")
+        elif was_stalled and not dry_run and (read_fan_speed() or 0) > 0:
+            was_stalled = False          # fan recovered on its own
 
         # Sleep in small steps so we react to SIGTERM promptly.
         slept = 0.0

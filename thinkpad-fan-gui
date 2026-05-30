@@ -46,6 +46,7 @@ DEFAULT_CONFIG = {
     "critical_temp": 87,
     "poll_interval": 2,
     "smoothing_seconds": 12,
+    "rekick_seconds": 5,
 }
 
 # Auto-curve presets: temperature at which each of levels 1..7 engages.
@@ -412,6 +413,11 @@ class FanGUI:
                         command=self._toggle_autostart).grid(row=0, column=0, sticky="w")
         ttk.Label(setf, text="(the background fan service already starts on boot)",
                   foreground="#666").grid(row=1, column=0, sticky="w")
+        self.rekick_var = tk.BooleanVar(value=self.cfg.get("rekick_seconds", 5) > 0)
+        ttk.Checkbutton(setf, text="Keep low levels spinning (pulse a stalled fan)",
+                        variable=self.rekick_var).grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(setf, text="(levels 1–3 can't self-sustain; this re-kicks them for airflow)",
+                  foreground="#666").grid(row=3, column=0, sticky="w")
 
         # --- actions (span both columns at the bottom) -----------------------
         actf = ttk.Frame(main)
@@ -507,6 +513,7 @@ class FanGUI:
         cfg["curve"] = curve
         cfg["critical_temp"] = int(self.crit_var.get())
         cfg["smoothing_seconds"] = int(self.smooth_var.get())
+        cfg["rekick_seconds"] = 5 if self.rekick_var.get() else 0
         return cfg
 
     def apply(self):
@@ -534,6 +541,7 @@ class FanGUI:
             var.set(t)
         self.crit_var.set(self.cfg.get("critical_temp", 87))
         self.smooth_var.set(self.cfg.get("smoothing_seconds", 12))
+        self.rekick_var.set(self.cfg.get("rekick_seconds", 5) > 0)
         self._on_mode_change()
         self.msg_var.set("Reloaded from disk.")
 

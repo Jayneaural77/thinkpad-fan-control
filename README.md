@@ -31,6 +31,10 @@ so the GUI never needs root — clean and Wayland-friendly.
 - **Temperature smoothing** — the curve reacts to an averaged temperature
   (default: 12 s) so brief CPU turbo spikes don't surge the fan on and off. The
   safety override still watches the raw temperature and reacts instantly.
+- **Stall re-kick** — on some ThinkPads the lowest fan levels (≈1–3) can't keep
+  the fan spinning; it spins up then stalls to 0 RPM. When enabled, the daemon
+  re-issues a stalled level periodically to pulse some airflow. Levels that do
+  sustain (RPM > 0) are never re-kicked, so higher speeds stay perfectly smooth.
 - **Launch at login** — a checkbox in *Settings* adds/removes an XDG autostart
   entry so the control panel opens when you log in. (The background fan service
   starts on boot regardless.)

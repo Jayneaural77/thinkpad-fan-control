@@ -1,0 +1,3 @@
+theme: jekyll-theme-cayman
+title: ThinkPad Fan Control
+description: A modern, Linux-native fan control GUI for ThinkPads (GNOME, KDE, Wayland).

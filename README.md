@@ -1,9 +1,17 @@
 # ThinkPad Fan Control
 
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Release](https://img.shields.io/github/v/release/Swmarakis/thinkpad-fan-control)
+![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey)
+
+A modern, Linux-native fan control GUI for ThinkPads — the kind of thing
+Windows users reach for TPFanControl to get, but built for Linux and Wayland.
+
 Automatic fan-speed control for **ThinkPad laptops on Linux**, with a desktop GUI.
 It gives you what the firmware / GNOME power profiles don't: **automatic
 temperature-based control across all 8 fan levels**, an editable curve you can
-drag on a graph, and precise manual override.
+drag on a graph, and precise manual override. Clean and **Wayland-friendly**,
+it works across **GNOME, KDE Plasma**, and other major desktop environments.
 
 Works on ThinkPads whose fan is controlled by the **`thinkpad_acpi`** driver
 (`/proc/acpi/ibm/fan`) — i.e. the large majority of ThinkPads on Linux.

@@ -19,8 +19,8 @@ systemctl daemon-reload
 echo "level auto" > /proc/acpi/ibm/fan 2>/dev/null || true
 
 echo "==> Removing files"
-rm -f /usr/local/bin/thinkpad-fand
-rm -f /usr/local/bin/thinkpad-fan-gui
+rm -f /usr/bin/thinkpad-fand /usr/local/bin/thinkpad-fand
+rm -f /usr/bin/thinkpad-fan-gui /usr/local/bin/thinkpad-fan-gui
 rm -f /usr/share/applications/thinkpad-fan-control.desktop
 rm -f /usr/share/icons/hicolor/scalable/apps/thinkpad-fan-control.svg
 rm -f /usr/share/icons/hicolor/256x256/apps/thinkpad-fan-control.png

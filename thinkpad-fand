@@ -76,26 +76,34 @@ def _hwmon_dirs_named(target):
     return out
 
 
-def read_cpu_temp():
-    """Highest plausible CPU temperature in whole degrees C, or None."""
-    candidates = _hwmon_dirs_named("coretemp")
-    if not candidates:
-        # Fall back to every hwmon device if coretemp isn't present.
-        candidates = glob.glob("/sys/class/hwmon/hwmon*")
+def _collect_temps(dirs):
+    """Highest plausible temperature (deg C) read from the given hwmon dirs."""
     temps = []
-    for d in candidates:
+    for d in dirs:
         for inp in glob.glob(os.path.join(d, "temp*_input")):
             try:
                 with open(inp) as f:
-                    milli = int(f.read().strip())
+                    celsius = int(f.read().strip()) / 1000.0
             except (OSError, ValueError):
                 continue
-            celsius = milli / 1000.0
             if 0 < celsius < 150:          # ignore obviously bogus readings
                 temps.append(celsius)
-    if not temps:
-        return None
-    return int(round(max(temps)))
+    return max(temps) if temps else None
+
+
+def read_cpu_temp():
+    """Highest plausible CPU temperature in whole degrees C, or None.
+
+    Works across ThinkPad CPUs: Intel (coretemp), AMD (k10temp), then the
+    ThinkPad EC's own sensor (present on essentially every ThinkPad), then any
+    remaining hwmon device as a last resort.
+    """
+    for name in ("coretemp", "k10temp", "thinkpad"):
+        t = _collect_temps(_hwmon_dirs_named(name))
+        if t is not None:
+            return int(round(t))
+    t = _collect_temps(glob.glob("/sys/class/hwmon/hwmon*"))
+    return int(round(t)) if t is not None else None
 
 
 # --------------------------------------------------------------------------- #

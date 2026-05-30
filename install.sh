@@ -37,10 +37,11 @@ if [[ ! -w /proc/acpi/ibm/fan ]]; then
     echo "    NOTE: /proc/acpi/ibm/fan still not writable; a reboot may be required." >&2
 fi
 
-# 2. Install executables.
-echo "==> Installing executables to /usr/local/bin"
-install -m 0755 "$SRC/thinkpad-fand"    /usr/local/bin/thinkpad-fand
-install -m 0755 "$SRC/thinkpad-fan-gui" /usr/local/bin/thinkpad-fan-gui
+# 2. Install executables to /usr/bin (canonical; matches the .deb package).
+echo "==> Installing executables to /usr/bin"
+rm -f /usr/local/bin/thinkpad-fand /usr/local/bin/thinkpad-fan-gui   # clean up older installs
+install -m 0755 "$SRC/thinkpad-fand"    /usr/bin/thinkpad-fand
+install -m 0755 "$SRC/thinkpad-fan-gui" /usr/bin/thinkpad-fan-gui
 
 # 3. Config directory, owned by the user so the GUI can save atomically.
 echo "==> Setting up /etc/thinkpad-fan (owned by $REAL_USER)"

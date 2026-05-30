@@ -60,19 +60,21 @@ PRESETS = {
 # --------------------------------------------------------------------------- #
 # Reading system state (no root needed)
 # --------------------------------------------------------------------------- #
-def read_cpu_temp():
-    candidates = []
+def _hwmon_named(target):
+    out = []
     for d in glob.glob("/sys/class/hwmon/hwmon*"):
         try:
             with open(os.path.join(d, "name")) as f:
-                if f.read().strip() == "coretemp":
-                    candidates.append(d)
+                if f.read().strip() == target:
+                    out.append(d)
         except OSError:
             pass
-    if not candidates:
-        candidates = glob.glob("/sys/class/hwmon/hwmon*")
+    return out
+
+
+def _max_temp(dirs):
     temps = []
-    for d in candidates:
+    for d in dirs:
         for inp in glob.glob(os.path.join(d, "temp*_input")):
             try:
                 with open(inp) as f:
@@ -81,7 +83,17 @@ def read_cpu_temp():
                     temps.append(c)
             except (OSError, ValueError):
                 pass
-    return int(round(max(temps))) if temps else None
+    return max(temps) if temps else None
+
+
+def read_cpu_temp():
+    # Intel (coretemp), AMD (k10temp), then the ThinkPad EC sensor, then anything.
+    for name in ("coretemp", "k10temp", "thinkpad"):
+        t = _max_temp(_hwmon_named(name))
+        if t is not None:
+            return int(round(t))
+    t = _max_temp(glob.glob("/sys/class/hwmon/hwmon*"))
+    return int(round(t)) if t is not None else None
 
 
 def read_fan_proc():
@@ -138,7 +150,7 @@ def autostart_enabled():
 def set_autostart(enabled):
     if enabled:
         # Prefer the canonical installed binary; fall back to however we were run.
-        exec_path = "/usr/local/bin/thinkpad-fan-gui"
+        exec_path = "/usr/bin/thinkpad-fan-gui"
         if not os.path.isfile(exec_path):
             exec_path = os.path.abspath(sys.argv[0])
         os.makedirs(AUTOSTART_DIR, exist_ok=True)

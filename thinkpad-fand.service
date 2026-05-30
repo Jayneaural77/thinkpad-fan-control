@@ -5,7 +5,7 @@ After=multi-user.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/thinkpad-fand
+ExecStart=/usr/bin/thinkpad-fand
 # Belt-and-suspenders: hand the fan back to firmware when the service stops.
 ExecStop=/bin/sh -c 'echo "level auto" > /proc/acpi/ibm/fan'
 Restart=on-failure

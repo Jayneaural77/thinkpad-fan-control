@@ -31,6 +31,16 @@ so the GUI never needs root — clean and Wayland-friendly. CPU temperature is r
 from `coretemp` (Intel), `k10temp` (AMD), or the ThinkPad sensor, so it works on
 both Intel and AMD ThinkPads.
 
+## Compatibility
+
+Works on any ThinkPad whose fan is driven by `thinkpad_acpi`. Confirmed reports
+below — please add yours in
+[issue #1](https://github.com/Swmarakis/thinkpad-fan-control/issues/1).
+
+| Model | Distro / Desktop | `/proc/acpi/ibm/fan` works? | Lowest level that keeps spinning | Notes |
+|-------|------------------|-----------------------------|----------------------------------|-------|
+| L490  | Ubuntu 24.04 / GNOME (Wayland) | Yes | ≈4 (1–3 stall; re-kick helps) | Developed & tested here |
+
 ## Modes
 
 | Mode | Behaviour |

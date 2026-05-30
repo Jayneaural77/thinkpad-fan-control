@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
 # Build a .deb package for ThinkPad Fan Control.
-# Usage: ./build-deb.sh   (produces build/thinkpad-fan-control_<ver>_all.deb)
+# Usage: packaging/build-deb.sh   (produces build/thinkpad-fan-control_<ver>_all.deb)
 #
 set -euo pipefail
 
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Repo root (this script lives in packaging/).
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG="thinkpad-fan-control"
 VERSION="1.0.0"
 BUILD="$SRC/build"
@@ -15,15 +16,15 @@ rm -rf "$BUILD"
 mkdir -p "$STAGE"
 
 # --- payload --------------------------------------------------------------- #
-install -Dm755 "$SRC/thinkpad-fand"               "$STAGE/usr/bin/thinkpad-fand"
-install -Dm755 "$SRC/thinkpad-fan-gui"            "$STAGE/usr/bin/thinkpad-fan-gui"
-install -Dm644 "$SRC/thinkpad-fand.service"       "$STAGE/lib/systemd/system/thinkpad-fand.service"
-install -Dm644 "$SRC/thinkpad-fan-control.desktop" "$STAGE/usr/share/applications/thinkpad-fan-control.desktop"
-install -Dm644 "$SRC/icon.svg"                    "$STAGE/usr/share/icons/hicolor/scalable/apps/thinkpad-fan-control.svg"
-install -Dm644 "$SRC/icon.png"                    "$STAGE/usr/share/icons/hicolor/256x256/apps/thinkpad-fan-control.png"
-install -Dm644 "$SRC/icon.png"                    "$STAGE/usr/share/pixmaps/thinkpad-fan-control.png"
-install -Dm644 "$SRC/config.json"                 "$STAGE/usr/share/thinkpad-fan-control/config.json"
-install -Dm644 "$SRC/README.md"                   "$STAGE/usr/share/doc/thinkpad-fan-control/README.md"
+install -Dm755 "$SRC/src/thinkpad-fand"                "$STAGE/usr/bin/thinkpad-fand"
+install -Dm755 "$SRC/src/thinkpad-fan-gui"             "$STAGE/usr/bin/thinkpad-fan-gui"
+install -Dm644 "$SRC/data/thinkpad-fand.service"       "$STAGE/lib/systemd/system/thinkpad-fand.service"
+install -Dm644 "$SRC/data/thinkpad-fan-control.desktop" "$STAGE/usr/share/applications/thinkpad-fan-control.desktop"
+install -Dm644 "$SRC/data/icon.svg"                    "$STAGE/usr/share/icons/hicolor/scalable/apps/thinkpad-fan-control.svg"
+install -Dm644 "$SRC/data/icon.png"                    "$STAGE/usr/share/icons/hicolor/256x256/apps/thinkpad-fan-control.png"
+install -Dm644 "$SRC/data/icon.png"                    "$STAGE/usr/share/pixmaps/thinkpad-fan-control.png"
+install -Dm644 "$SRC/data/config.json"                 "$STAGE/usr/share/thinkpad-fan-control/config.json"
+install -Dm644 "$SRC/README.md"                        "$STAGE/usr/share/doc/thinkpad-fan-control/README.md"
 
 # --- control --------------------------------------------------------------- #
 INSTALLED_KB=$(du -ks "$STAGE" | cut -f1)

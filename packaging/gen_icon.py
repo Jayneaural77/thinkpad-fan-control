@@ -5,10 +5,12 @@ Rendered at 2x and box-downsampled for light anti-aliasing. Produces a 256x256
 RGBA PNG: a blue rounded square with six white fan blades and a hub.
 """
 import math
+import os
 import struct
 import zlib
 
-OUT = "icon.png"
+# Write into the repo's data/ directory regardless of the current directory.
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "icon.png")
 SIZE = 256
 SS = 2                      # supersampling factor
 S = SIZE * SS               # working resolution

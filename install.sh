@@ -40,20 +40,20 @@ fi
 # 2. Install executables to /usr/bin (canonical; matches the .deb package).
 echo "==> Installing executables to /usr/bin"
 rm -f /usr/local/bin/thinkpad-fand /usr/local/bin/thinkpad-fan-gui   # clean up older installs
-install -m 0755 "$SRC/thinkpad-fand"    /usr/bin/thinkpad-fand
-install -m 0755 "$SRC/thinkpad-fan-gui" /usr/bin/thinkpad-fan-gui
+install -m 0755 "$SRC/src/thinkpad-fand"    /usr/bin/thinkpad-fand
+install -m 0755 "$SRC/src/thinkpad-fan-gui" /usr/bin/thinkpad-fan-gui
 
 # 3. Config directory, owned by the user so the GUI can save atomically.
 echo "==> Setting up /etc/thinkpad-fan (owned by $REAL_USER)"
 mkdir -p /etc/thinkpad-fan
 if [[ ! -f /etc/thinkpad-fan/config.json ]]; then
-    install -m 0644 "$SRC/config.json" /etc/thinkpad-fan/config.json
+    install -m 0644 "$SRC/data/config.json" /etc/thinkpad-fan/config.json
 fi
 chown -R "$REAL_USER" /etc/thinkpad-fan
 
 # 4. systemd service.
 echo "==> Installing and starting the systemd service"
-install -m 0644 "$SRC/thinkpad-fand.service" /etc/systemd/system/thinkpad-fand.service
+install -m 0644 "$SRC/data/thinkpad-fand.service" /etc/systemd/system/thinkpad-fand.service
 systemctl daemon-reload
 systemctl enable thinkpad-fand.service
 # restart (not just start) so an upgrade always loads the new binary
@@ -64,10 +64,10 @@ echo "==> Installing icons and application launcher"
 install -d /usr/share/icons/hicolor/scalable/apps
 install -d /usr/share/icons/hicolor/256x256/apps
 install -d /usr/share/pixmaps
-install -m 0644 "$SRC/icon.svg" /usr/share/icons/hicolor/scalable/apps/thinkpad-fan-control.svg
-install -m 0644 "$SRC/icon.png" /usr/share/icons/hicolor/256x256/apps/thinkpad-fan-control.png
-install -m 0644 "$SRC/icon.png" /usr/share/pixmaps/thinkpad-fan-control.png
-install -m 0644 "$SRC/thinkpad-fan-control.desktop" \
+install -m 0644 "$SRC/data/icon.svg" /usr/share/icons/hicolor/scalable/apps/thinkpad-fan-control.svg
+install -m 0644 "$SRC/data/icon.png" /usr/share/icons/hicolor/256x256/apps/thinkpad-fan-control.png
+install -m 0644 "$SRC/data/icon.png" /usr/share/pixmaps/thinkpad-fan-control.png
+install -m 0644 "$SRC/data/thinkpad-fan-control.desktop" \
     /usr/share/applications/thinkpad-fan-control.desktop
 gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
 update-desktop-database /usr/share/applications 2>/dev/null || true

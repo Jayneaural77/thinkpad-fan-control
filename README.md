@@ -105,6 +105,19 @@ sudo ./uninstall.sh
   levels barely spin the fan. For steady airflow use a level that actually
   sustains (often ≈4+), or enable the stall re-kick for intermittent airflow.
 
+## Repository layout
+
+```
+src/        the daemon (thinkpad-fand) and GUI (thinkpad-fan-gui)
+data/       files the installer ships: systemd unit, .desktop, default config, icons
+packaging/  build-deb.sh (creates the release .deb) and the icon generator
+install.sh  / uninstall.sh   install from source
+docs/       screenshot
+```
+
+To produce the `.deb` for a release: `packaging/build-deb.sh`
+(output: `build/thinkpad-fan-control_<ver>_all.deb`).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

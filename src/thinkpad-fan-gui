@@ -31,11 +31,14 @@ TEMP_MIN, TEMP_MAX = 20, 95
 AUTOSTART_DIR = os.path.expanduser("~/.config/autostart")
 AUTOSTART_FILE = os.path.join(AUTOSTART_DIR, "thinkpad-fan-control.desktop")
 
-# Window icon: prefer the installed locations, fall back to the source dir.
+# Window icon: prefer the installed locations, fall back to the source tree
+# (src/thinkpad-fan-gui -> ../data/icon.png) when running uninstalled.
+_HERE = os.path.dirname(os.path.abspath(__file__))
 ICON_CANDIDATES = [
     "/usr/share/icons/hicolor/256x256/apps/thinkpad-fan-control.png",
     "/usr/share/pixmaps/thinkpad-fan-control.png",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png"),
+    os.path.join(_HERE, "..", "data", "icon.png"),
+    os.path.join(_HERE, "icon.png"),
 ]
 
 DEFAULT_CONFIG = {

